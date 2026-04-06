@@ -11,7 +11,7 @@ export default defineConfig({
     proxy: {
       // كل طلب يبدأ بـ /api يُوجَّه تلقائياً لـ Laravel
       '/api': {
-        target: 'http://127.0.0.1:8050',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
     },
