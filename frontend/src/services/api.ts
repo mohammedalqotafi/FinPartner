@@ -15,8 +15,10 @@ const http = axios.create({
 http.interceptors.response.use(
   (res) => res,
   (error) => {
+    const metaMessage = error.response?.data?.error?.message;
     const message =
       error.response?.data?.message ||
+      metaMessage ||
       error.response?.data?.errors ||
       'حدث خطأ في الاتصال بالخادم';
     return Promise.reject(new Error(typeof message === 'string' ? message : JSON.stringify(message)));
@@ -113,6 +115,11 @@ export const membersApi = {
 
   delete: async (id: string): Promise<void> => {
     await http.delete(`/members/${id}`);
+  },
+
+  sendWhatsApp: async (id: string, data: { message: string }): Promise<{ message: string; data: any }> => {
+    const res = await http.post(`/members/${id}/whatsapp`, data);
+    return res.data;
   },
 };
 

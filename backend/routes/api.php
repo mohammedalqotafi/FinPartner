@@ -18,6 +18,10 @@ use Illuminate\Support\Facades\Route;
 // ─── Members ──────────────────────────────────────────────────────────────────
 Route::apiResource('members', MemberController::class);
 
+// إرسال رسالة واتساب مخصصة لعضو
+Route::post('members/{member}/whatsapp', [MemberController::class, 'sendWhatsApp'])
+    ->name('members.whatsapp');
+
 // عمليات عضو محدد (nested route)
 Route::get('members/{member}/transactions', [TransactionController::class, 'memberTransactions'])
     ->name('members.transactions');
