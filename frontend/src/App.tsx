@@ -8,6 +8,7 @@ import { WithdrawalsPage } from './features/withdrawals/WithdrawalsPage';
 import { StatementsPage } from './features/statements/StatementsPage';
 import { MembersPage } from './features/members/MembersPage';
 import { MemberDetailPage } from './features/members/MemberDetailPage';
+import { ExpensesPage } from './features/expenses/ExpensesPage';
 import { useAppStore } from './store/useAppStore';
 
 function App() {
@@ -63,6 +64,7 @@ function App() {
           <Route path="statements" element={<StatementsPage />} />
           <Route path="members" element={<MembersPage />} />
           <Route path="members/:id" element={<MemberDetailPage />} />
+          <Route path="expenses" element={<ExpensesPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

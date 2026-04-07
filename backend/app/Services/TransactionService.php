@@ -106,17 +106,7 @@ class TransactionService
      */
     public function recalculateBalance(Member $member): void
     {
-        $deposits = $member->completedTransactions()
-            ->whereIn('type', ['deposit', 'adjustment'])
-            ->sum('amount');
-
-        $withdrawals = $member->completedTransactions()
-            ->whereIn('type', ['withdraw', 'transfer'])
-            ->sum('amount');
-
-        $newBalance = $member->opening_balance + $deposits - $withdrawals;
-
-        $member->update(['balance' => $newBalance]);
+        $member->update(['balance' => $member->calculated_balance]);
     }
 
     /**

@@ -166,3 +166,5 @@ export const dashboardApi = {
     };
   },
 };
+
+export default http;
