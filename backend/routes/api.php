@@ -19,6 +19,10 @@ use Illuminate\Support\Facades\Route;
 // ─── Members ──────────────────────────────────────────────────────────────────
 Route::apiResource('members', MemberController::class);
 
+
+// إرسال رسالة واتساب مخصصة لعضو
+Route::post('members/{member}/whatsapp', [MemberController::class, 'sendWhatsApp'])
+    ->name('members.whatsapp');
 // ─── Expenses ─────────────────────────────────────────────────────────────────
 Route::apiResource('expenses', ExpenseController::class);
 

@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowRight, ArrowDownToLine, ArrowUpFromLine,
-  Printer, TrendingUp, TrendingDown, ArrowUpDown, Minus,
+  Printer, TrendingUp, TrendingDown, ArrowUpDown, Minus, MessageCircle,
 } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
 import { TransactionModal } from '../../components/shared/TransactionModal';
+import { WhatsAppModal } from '../../components/shared/WhatsAppModal';
 import {
   buildLedger, calcSummary, formatAmount, formatDatetime,
   formatTxId, TX_TYPE_LABEL, TX_TYPE_COLOR, TX_STATUS_LABEL,
@@ -20,6 +21,7 @@ export function MemberDetailPage() {
   const updateTransactionStatus = useAppStore((s) => s.updateTransactionStatus);
 
   const [modal, setModal] = useState<TransactionType | null>(null);
+  const [whatsappOpen, setWhatsappOpen] = useState(false);
   const [filterType, setFilterType] = useState('all');
   const [filterStatus, setFilterStatus] = useState('completed');
   const [fromDate, setFromDate] = useState('');
@@ -100,6 +102,13 @@ export function MemberDetailPage() {
             </div>
           </div>
           <div className="flex gap-3 print:hidden">
+            <button
+              onClick={() => setWhatsappOpen(true)}
+              disabled={!member.phone}
+              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold rounded-xl text-sm shadow-lg shadow-emerald-200 transition cursor-pointer"
+            >
+              <MessageCircle size={15} /> واتساب
+            </button>
             <button
               onClick={() => setModal('deposit')}
               className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-sm shadow-lg shadow-emerald-200 transition cursor-pointer"
@@ -387,6 +396,13 @@ export function MemberDetailPage() {
           defaultType={modal}
           defaultMemberId={id}
           onClose={() => setModal(null)}
+        />
+      )}
+
+      {whatsappOpen && (
+        <WhatsAppModal
+          member={member}
+          onClose={() => setWhatsappOpen(false)}
         />
       )}
     </div>
