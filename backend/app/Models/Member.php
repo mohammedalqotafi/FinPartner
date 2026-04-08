@@ -42,6 +42,21 @@ class Member extends Model
         return $this->hasMany(Transaction::class)->where('status', 'pending');
     }
 
+    public function expenseSplits(): HasMany
+    {
+        return $this->hasMany(ExpenseSplit::class);
+    }
+
+    public function personalExpenses(): HasMany
+    {
+        return $this->hasMany(Expense::class, 'affected_member_id')->where('expense_type', 'personal');
+    }
+
+    public function paidExpenses(): HasMany
+    {
+        return $this->hasMany(Expense::class, 'payer_id');
+    }
+
     // ─── Accessors ────────────────────────────────────────────────────────────
 
     /**
@@ -65,7 +80,7 @@ class Member extends Model
     }
 
     /**
-     * صافي التغيير = الإيداعات - السحوبات
+     * صافي التغيير من المعاملات المباشرة
      */
     public function getNetChangeAttribute(): float
     {
@@ -73,12 +88,21 @@ class Member extends Model
     }
 
     /**
-     * الرصيد النهائي المحسوب = رصيد افتتاحي + صافي التغيير
-     * (يُستعمَل للتحقق من صحة الرصيد المخزون)
+     * الرصيد النهائي المحسوب (Unified Ledger)
+     * = رصيد افتتاحي + إيداعات - سحوبات - تقسيمات مشاركة - مصاريف شخصية + مصاريف دفعها نيابة عن غيره
      */
     public function getCalculatedBalanceAttribute(): float
     {
-        return (float) $this->opening_balance + $this->net_change;
+        $depositWithdrawNet = $this->net_change;
+        $sharedSplits = (float) $this->expenseSplits()->sum('amount');
+        $personalExpenses = (float) $this->personalExpenses()->sum('amount');
+        $paidContributions = (float) $this->paidExpenses()->sum('amount');
+
+        return (float) $this->opening_balance 
+            + $depositWithdrawNet 
+            - $sharedSplits 
+            - $personalExpenses 
+            + $paidContributions;
     }
 
     // ─── Scopes ───────────────────────────────────────────────────────────────
