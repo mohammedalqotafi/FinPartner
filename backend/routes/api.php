@@ -2,6 +2,8 @@
 
 use App\Http\Controllers\Api\MemberController;
 use App\Http\Controllers\Api\TransactionController;
+
+use App\Http\Controllers\Api\ExpenseController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -17,6 +19,11 @@ use Illuminate\Support\Facades\Route;
 
 // ─── Members ──────────────────────────────────────────────────────────────────
 Route::apiResource('members', MemberController::class);
+
+
+
+// ─── Expenses ─────────────────────────────────────────────────────────────────
+Route::apiResource('expenses', ExpenseController::class);
 
 // عمليات عضو محدد (nested route)
 Route::get('members/{member}/transactions', [TransactionController::class, 'memberTransactions'])

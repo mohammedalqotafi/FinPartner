@@ -22,6 +22,7 @@ const navGroups = [
       { to: '/deposits',     icon: ArrowDownToLine,  label: 'الإيداعات'    },
       { to: '/withdrawals',  icon: ArrowUpFromLine,  label: 'السحوبات'      },
       { to: '/transactions', icon: ArrowLeftRight,    label: 'كل العمليات'  },
+      { to: '/expenses',     icon: Wallet,           label: 'المصروفات'    },
     ],
   },
   {
