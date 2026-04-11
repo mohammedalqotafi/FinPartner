@@ -2,7 +2,15 @@ import React from 'react';
 import { X, Calendar, User, Tag, CreditCard, ArrowRightLeft } from 'lucide-react';
 import type { Expense } from '../../../types/expenses.types';
 
-export function ExpenseDetails({ expense, onClose }: { expense: Expense, onClose: () => void }) {
+export function ExpenseDetails({ 
+  expense, 
+  onClose, 
+  onDelete 
+}: { 
+  expense: Expense; 
+  onClose: () => void; 
+  onDelete?: (exp: Expense) => Promise<void>; 
+}) {
   const isPayerParticipant = expense.expense_type === 'shared' && 
                              expense.payer_id !== null && 
                              expense.splits?.some(s => s.member_id === expense.payer_id);

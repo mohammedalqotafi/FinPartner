@@ -17,6 +17,13 @@ return new class extends Migration
             $table->foreignId('member_id')->constrained('members')->cascadeOnDelete();
             $table->decimal('amount', 10, 2);
             $table->timestamps();
+
+            // منع تكرار نفس العضو في نفس المصروف
+            $table->unique(['expense_id', 'member_id'], 'unique_expense_member');
+
+            // Indexes للأداء
+            $table->index('expense_id', 'idx_split_expense_id');
+            $table->index('member_id', 'idx_split_member_id');
         });
     }
 

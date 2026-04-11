@@ -103,24 +103,17 @@ class TransactionService
     /**
      * إعادة حساب رصيد العضو من الصفر (للتدقيق والتحقق)
      * يُستعمَل لإصلاح أي تعارض محتمل في البيانات
+     * تم تحديثه ليشمل حسابات المصروفات بناءً على Unified Ledger
      */
     public function recalculateBalance(Member $member): void
     {
-        $deposits = $member->completedTransactions()
-            ->whereIn('type', ['deposit', 'adjustment'])
-            ->sum('amount');
-
-        $withdrawals = $member->completedTransactions()
-            ->whereIn('type', ['withdraw', 'transfer'])
-            ->sum('amount');
-
-        $newBalance = $member->opening_balance + $deposits - $withdrawals;
-
+        $newBalance = $member->calculated_balance;
         $member->update(['balance' => $newBalance]);
     }
 
     /**
      * بناء سجل دفتر الأستاذ مع الرصيد التراكمي لكل سطر
+     * Requirements: 15.1 - تحسين eager loading
      *
      * @param Member $member
      * @param array  $filters ['from_date', 'to_date', 'type', 'status']
@@ -129,6 +122,10 @@ class TransactionService
     public function buildLedger(Member $member, array $filters = []): array
     {
         $query = $member->transactions()
+            ->select([  // تحديد الحقول المطلوبة فقط لتحسين الأداء
+                'id', 'reference', 'member_id', 'type', 'amount', 
+                'transaction_at', 'note', 'status', 'balance_after'
+            ])
             ->orderBy('transaction_at')
             ->orderBy('id');
 
@@ -145,6 +142,7 @@ class TransactionService
             $query->where('transaction_at', '<=', $filters['to_date'] . ' 23:59:59');
         }
 
+        // تحسين: تحميل المعاملات مرة واحدة بدلاً من استعلامات متعددة
         $transactions = $query->where('status', '!=', 'cancelled')->get();
 
         $running = (float) $member->opening_balance;

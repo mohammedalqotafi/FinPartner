@@ -31,3 +31,7 @@ export interface LedgerRow {
   running: number;
   isOpening?: boolean;
 }
+
+// Re-export debt types
+export * from './debts.types';
+export * from './expenses.types';

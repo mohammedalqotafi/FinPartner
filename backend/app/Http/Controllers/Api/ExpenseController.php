@@ -3,57 +3,111 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\StoreExpenseRequest;
 use App\Models\Expense;
 use App\Models\ExpenseSplit;
+use App\Models\Member;
+use App\Services\PennyRoutingService;
+use App\Services\TransactionService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Log;
 
 class ExpenseController extends Controller
 {
+    public function __construct(
+        private readonly PennyRoutingService $pennyRouting,
+        private readonly TransactionService $transactionService,
+    ) {}
+
     /**
      * Display a listing of the expenses.
+     * Requirements: 11.2, 15.2, 15.1, 15.4
      */
-    public function index()
+    public function index(Request $request): JsonResponse
     {
-        $expenses = Expense::with(['payer', 'affectedMember', 'splits.member'])
-            ->orderBy('expense_datetime', 'desc')
-            ->get();
+        // تحسين eager loading لتجنب N+1 queries
+        // تحميل جميع العلاقات المطلوبة في استعلام واحد
+        $query = Expense::with([
+                'payer:id,name',                    // تحميل الدافع مع الحقول المطلوبة فقط
+                'affectedMember:id,name',           // تحميل العضو المتأثر مع الحقول المطلوبة فقط
+                'splits' => function ($query) {    // تحميل التقسيمات مع تحسين
+                    $query->select('id', 'expense_id', 'member_id', 'amount')
+                          ->orderBy('member_id');   // ترتيب التقسيمات حسب العضو
+                },
+                'splits.member:id,name'             // تحميل أعضاء التقسيمات مع الحقول المطلوبة فقط
+            ])
+            ->select([                              // تحديد الحقول المطلوبة فقط لتحسين الأداء
+                'id', 'reference', 'expense_type', 'affected_member_id',
+                'category', 'amount', 'payer_id', 'payment_method',
+                'description', 'expense_datetime', 'created_at'
+            ])
+            ->orderBy('expense_datetime', 'desc');
 
-        return response()->json($expenses);
+        // Requirements: 15.4 - إضافة pagination للقوائم الطويلة
+        $perPage = $request->get('per_page', 25); // 25 سجل افتراضياً
+        $perPage = min(max($perPage, 10), 100);   // بين 10 و 100 سجل كحد أقصى
+
+        // إذا طلب المستخدم جميع السجلات (للتصدير مثلاً)
+        if ($request->get('all') === 'true') {
+            $expenses = $query->get();
+            return response()->json([
+                'data' => $expenses,
+                'meta' => [
+                    'total' => $expenses->count(),
+                    'per_page' => $expenses->count(),
+                    'current_page' => 1,
+                    'last_page' => 1,
+                    'from' => 1,
+                    'to' => $expenses->count()
+                ]
+            ]);
+        }
+
+        // استخدام pagination
+        $expenses = $query->paginate($perPage);
+
+        return response()->json([
+            'data' => $expenses->items(),
+            'meta' => [
+                'total' => $expenses->total(),
+                'per_page' => $expenses->perPage(),
+                'current_page' => $expenses->currentPage(),
+                'last_page' => $expenses->lastPage(),
+                'from' => $expenses->firstItem(),
+                'to' => $expenses->lastItem(),
+                'has_more_pages' => $expenses->hasMorePages()
+            ],
+            'links' => [
+                'first' => $expenses->url(1),
+                'last' => $expenses->url($expenses->lastPage()),
+                'prev' => $expenses->previousPageUrl(),
+                'next' => $expenses->nextPageUrl()
+            ]
+        ]);
     }
 
     /**
      * Store a newly created expense in storage.
+     * Requirements: 11.1, 9.1, 2.1, 2.2, 2.4, 2.5, 2.7, 1.3, 1.4, 4.2, 17.2, 9.2, 18.1, 18.2
      */
-    public function store(Request $request)
+    public function store(StoreExpenseRequest $request): JsonResponse
     {
-        $validated = $request->validate([
-            'reference'          => 'required|string|unique:expenses,reference',
-            'expense_type'       => ['required', Rule::in(['shared', 'operational', 'personal'])],
-            'expense_datetime'   => 'required|date',
-            'category'           => 'required|string',
-            'amount'             => 'required|numeric|min:0.01',
-            'payment_method'     => 'required|string',
-            'description'        => 'nullable|string',
-            'payer_id'           => 'nullable|exists:members,id',
-            'affected_member_id' => 'exclude_unless:expense_type,personal|required|exists:members,id',
-            
-            // For shared logic
-            'split_type'         => 'exclude_unless:expense_type,shared|required|in:equal,manual',
-            'members'            => 'exclude_unless:expense_type,shared|required|array|min:1',
-            'members.*.id'       => 'exclude_unless:expense_type,shared|required|exists:members,id',
-            'members.*.amount'   => 'exclude_unless:split_type,manual|required|numeric|min:0.01',
-        ]);
+        $validated = $request->validated();
 
         try {
+            // Requirements: 9.1 - بدء database transaction
             DB::beginTransaction();
 
-            // Create Expense
+            // Requirements: 11.1, 9.1 - إنشاء Expense record
             $expense = Expense::create([
-                'reference'          => $validated['reference'],
+                'reference'          => Expense::generateReference(),
                 'expense_type'       => $validated['expense_type'],
-                'affected_member_id' => $validated['expense_type'] === 'personal' ? $validated['affected_member_id'] : null,
+                // Requirements: 1.3 - affected_member_id للمصروفات الشخصية فقط
+                'affected_member_id' => $validated['expense_type'] === 'personal'
+                    ? ($validated['affected_member_id'] ?? null)
+                    : null,
                 'category'           => $validated['category'],
                 'amount'             => $validated['amount'],
                 'payer_id'           => $validated['payer_id'] ?? null,
@@ -62,131 +116,276 @@ class ExpenseController extends Controller
                 'expense_datetime'   => $validated['expense_datetime'],
             ]);
 
-            // Handle Shared Expense Splits
+            // Requirements: 2.1, 2.2, 2.4, 2.5, 2.7 - معالجة Shared Expenses
             if ($validated['expense_type'] === 'shared') {
-                $totalAmount = (float) $validated['amount'];
-                $members = $validated['members'];
-                $participantsCount = count($members);
-
-                if ($validated['split_type'] === 'equal') {
-                    // Penny Routing: SHA-256 logic
-                    $baseAmount = floor(($totalAmount / $participantsCount) * 100) / 100;
-                    $totalAssigned = $baseAmount * $participantsCount;
-                    $remainderCents = round(($totalAmount - $totalAssigned) * 100);
-
-                    // Deterministic indexing: int(SHA256(expense_reference)) % participants_count
-                    // We take the first 8 hex characters of sha256 to fit in standard integer
-                    $hashHex = substr(hash('sha256', $expense->reference), 0, 8);
-                    $hashInt = hexdec($hashHex);
-                    $remainderReceiverIndex = $hashInt % $participantsCount;
-
-                    foreach ($members as $index => $memberData) {
-                        $memberAmount = $baseAmount;
-                        
-                        // Assign 1 cent at a time up to the remainderCents if there's multiple cents (rare but mathematically true)
-                        // Actually, if we divide by participants_count, the remainder is < participants_count cents.
-                        // We safely give $0.01 chunks until it's 0. Wait, a simpler way is to give ALL remainder cents to the target index.
-                        // For example $10.00 / 3 = 3.33 => Remainder is $0.01. Index gets $0.01.
-                        // $10.00 / 6 = 1.66 => Remainder is $0.04. 
-                        // But usually remainder is dispersed. For this spec, giving the exact remainder block to one index is acceptable.
-                        if ($index === $remainderReceiverIndex) {
-                            $memberAmount += ($remainderCents / 100);
-                        }
-
-                        ExpenseSplit::create([
-                            'expense_id' => $expense->id,
-                            'member_id'  => $memberData['id'],
-                            'amount'     => $memberAmount,
-                        ]);
-                    }
-
-                } else if ($validated['split_type'] === 'manual') {
-                    $manualSum = 0;
-                    foreach ($members as $memberData) {
-                        $manualSum += (float) $memberData['amount'];
-                    }
-
-                    // Strict check
-                    if (round($manualSum, 2) !== round($totalAmount, 2)) {
-                        throw new \Exception("Manual split sum ({$manualSum}) does not match total amount ({$totalAmount})");
-                    }
-
-                    foreach ($members as $memberData) {
-                        ExpenseSplit::create([
-                            'expense_id' => $expense->id,
-                            'member_id'  => $memberData['id'],
-                            'amount'     => $memberData['amount'],
-                        ]);
-                    }
-                }
+                $this->handleSharedExpense($expense, $validated);
             }
 
+            // Requirements: 9.1 - commit بعد نجاح جميع العمليات
             DB::commit();
 
-            // Sync physical balance column for Ledger
-            $affectedMemberIds = collect($validated['members'] ?? [])->pluck('id');
-            if ($expense->payer_id) $affectedMemberIds->push($expense->payer_id);
-            if ($expense->affected_member_id) $affectedMemberIds->push($expense->affected_member_id);
-            
-            \App\Models\Member::whereIn('id', $affectedMemberIds->filter()->unique())->get()->each(function ($member) {
-                app(\App\Services\TransactionService::class)->recalculateBalance($member);
-            });
+            // Requirements: 4.2, 17.2 - إعادة حساب أرصدة الأعضاء المتأثرين
+            $this->recalculateAffectedBalances($expense, $validated);
 
-            return response()->json($expense->load(['payer', 'affectedMember', 'splits.member']), 201);
+            return response()->json(
+                $expense->load([
+                    'payer:id,name',
+                    'affectedMember:id,name',
+                    'splits' => function ($query) {
+                        $query->select('id', 'expense_id', 'member_id', 'amount')
+                              ->orderBy('member_id');
+                    },
+                    'splits.member:id,name'
+                ]),
+                201
+            );
 
         } catch (\Exception $e) {
+            // Requirements: 9.2, 18.1 - rollback عند الفشل
             DB::rollBack();
-            return response()->json(['message' => $e->getMessage()], 422);
+
+            Log::error('Failed to create expense', [
+                'error'   => $e->getMessage(),
+                'data'    => $validated,
+            ]);
+
+            // Requirements: 18.2 - رسائل خطأ واضحة بدون تفاصيل تقنية حساسة
+            $userMessage = $e instanceof \InvalidArgumentException
+                ? $e->getMessage()
+                : 'حدث خطأ أثناء إنشاء المصروف. يرجى المحاولة مرة أخرى.';
+
+            return response()->json(['message' => $userMessage], 422);
         }
     }
 
     /**
-     * Display the specified expense.
+     * Display the specified expense with smart analysis for current user.
+     * Requirements: 11.3, 11.7, 15.1
+     * 
+     * @param Expense $expense
+     * @param Request $request - يحتوي على current_user_id للتحليل الذكي
      */
-    public function show(Expense $expense)
+    public function show(Expense $expense, Request $request): JsonResponse
     {
-        return response()->json($expense->load(['payer', 'affectedMember', 'splits.member']));
+        // تحسين eager loading لعرض تفاصيل المصروف
+        // تحميل جميع العلاقات المطلوبة مع تحسين الحقول
+        $expense->load([
+            'payer:id,name,email,phone',            // تحميل بيانات الدافع الكاملة
+            'affectedMember:id,name,email,phone',   // تحميل بيانات العضو المتأثر الكاملة
+            'splits' => function ($query) {         // تحميل التقسيمات مع ترتيب
+                $query->select('id', 'expense_id', 'member_id', 'amount')
+                      ->orderBy('amount', 'desc');  // ترتيب حسب المبلغ (الأكبر أولاً)
+            },
+            'splits.member:id,name,email'           // تحميل بيانات أعضاء التقسيمات
+        ]);
+
+        // التحليل الذكي للمستخدم الحالي (إذا تم تمرير current_user_id)
+        $currentUserId = $request->query('current_user_id');
+        
+        // إذا تم طلب التحليل الذكي، نرجع الشكل الجديد
+        if ($currentUserId && $expense->expense_type === 'shared') {
+            $response = [
+                'expense' => [
+                    'id' => $expense->id,
+                    'reference' => $expense->reference,
+                    'expense_type' => $expense->expense_type,
+                    'category' => $expense->category,
+                    'total_amount' => (float) $expense->amount,
+                    'payment_method' => $expense->payment_method,
+                    'description' => $expense->description,
+                    'expense_datetime' => $expense->expense_datetime->toIso8601String(),
+                    'created_at' => $expense->created_at->toIso8601String(),
+                    'payer' => $expense->payer ? [
+                        'id' => $expense->payer->id,
+                        'name' => $expense->payer->name,
+                        'email' => $expense->payer->email,
+                        'phone' => $expense->payer->phone,
+                    ] : null,
+                    'affected_member' => $expense->affectedMember ? [
+                        'id' => $expense->affectedMember->id,
+                        'name' => $expense->affectedMember->name,
+                        'email' => $expense->affectedMember->email,
+                        'phone' => $expense->affectedMember->phone,
+                    ] : null,
+                ],
+                'splits' => $expense->splits->map(function ($split) {
+                    return [
+                        'id' => $split->id,
+                        'member' => [
+                            'id' => $split->member->id,
+                            'name' => $split->member->name,
+                            'email' => $split->member->email,
+                        ],
+                        'amount' => (float) $split->amount,
+                    ];
+                })->values(),
+                'analysis' => $this->analyzeExpenseForUser($expense, (int) $currentUserId),
+            ];
+            
+            return response()->json($response);
+        }
+        
+        // الشكل القديم للتوافق مع الاختبارات الموجودة
+        return response()->json($expense);
     }
 
     /**
-     * Update the specified expense in storage.
+     * تحليل ذكي للمصروف التشاركي بالنسبة للمستخدم الحالي
+     * 
+     * @param Expense $expense
+     * @param int $currentUserId
+     * @return array
      */
-    public function update(Request $request, Expense $expense)
+    private function analyzeExpenseForUser(Expense $expense, int $currentUserId): array
     {
-        // For ledger safety, updating an expense that alters money might be restricted or 
-        // require a strict overwrite. We will implement basic update but deleting splits and recreating.
-        // Full identical logic to store() for consistency, substituting creation.
-        // Left unimplemented for brevity or implement basic fields update if needed.
-        // Production systems often restrict changing completed ledger entries.
+        $totalAmount = (float) $expense->amount;
+        $isPayer = $expense->payer_id === $currentUserId;
         
-        return response()->json(['message' => 'Updates to finalized ledger expenses require specific reversal entries or a full rewrite process not included in this endpoint.'], 501);
+        // البحث عن نصيب المستخدم من التقسيمات
+        $userSplit = $expense->splits->firstWhere('member_id', $currentUserId);
+        $userShare = $userSplit ? (float) $userSplit->amount : 0;
+
+        if ($isPayer) {
+            // المستخدم هو الدافع
+            return [
+                'is_payer' => true,
+                'your_share' => $userShare,
+                'you_paid' => $totalAmount,
+                'others_owe_you' => $totalAmount - $userShare,
+                'net_position' => $totalAmount - $userShare, // موجب = لك على الآخرين
+            ];
+        } else {
+            // المستخدم مشارك فقط
+            return [
+                'is_payer' => false,
+                'you_owe' => $userShare,
+                'paid_to' => $expense->payer ? $expense->payer->name : 'الخزانة',
+                'paid_to_id' => $expense->payer_id,
+                'net_position' => -$userShare, // سالب = عليك للآخرين
+            ];
+        }
     }
 
     /**
      * Remove the specified expense from storage.
+     * Requirements: 12.1, 12.2, 12.4
      */
-    public function destroy(Expense $expense)
+    public function destroy(Expense $expense): JsonResponse
     {
         try {
             DB::beginTransaction();
+
+            // جمع الأعضاء المتأثرين قبل الحذف مع تحسين الاستعلام
+            $affectedMemberIds = collect();
             
-            $affectedMemberIds = collect($expense->splits)->pluck('member_id');
-            if ($expense->payer_id) $affectedMemberIds->push($expense->payer_id);
-            if ($expense->affected_member_id) $affectedMemberIds->push($expense->affected_member_id);
+            // تحميل التقسيمات مع تحديد الحقول المطلوبة فقط
+            if ($expense->relationLoaded('splits')) {
+                $affectedMemberIds = $affectedMemberIds->merge($expense->splits->pluck('member_id'));
+            } else {
+                $affectedMemberIds = $affectedMemberIds->merge(
+                    $expense->splits()->pluck('member_id')
+                );
+            }
+            
+            if ($expense->payer_id) {
+                $affectedMemberIds->push($expense->payer_id);
+            }
+            if ($expense->affected_member_id) {
+                $affectedMemberIds->push($expense->affected_member_id);
+            }
             $affectedMemberIds = $affectedMemberIds->filter()->unique();
 
-            // Automatically cascades deletion to expense_splits thanks to the DB schema
+            // Requirements: 12.1 - cascade delete للـ splits تلقائياً
             $expense->delete();
+
             DB::commit();
-            
-            \App\Models\Member::whereIn('id', $affectedMemberIds)->get()->each(function ($member) {
-                app(\App\Services\TransactionService::class)->recalculateBalance($member);
-            });
-            
-            return response()->json(['message' => 'Expense deleted successfully']);
+
+            Log::info('Expense deleted', ['expense_id' => $expense->id]);
+
+            // Requirements: 12.2 - إعادة حساب أرصدة الأعضاء المتأثرين مع تحسين eager loading
+            Member::whereIn('id', $affectedMemberIds)
+                ->with([
+                    'expenseSplits:id,member_id,amount',
+                    'personalExpenses:id,affected_member_id,amount',
+                    'paidExpenses:id,payer_id,amount',
+                    'completedTransactions:id,member_id,type,amount'
+                ])
+                ->get()
+                ->each(fn(Member $member) => $this->transactionService->recalculateBalance($member));
+
+            return response()->json(['message' => 'تم حذف المصروف بنجاح']);
+
         } catch (\Exception $e) {
             DB::rollBack();
-            return response()->json(['message' => 'Failed to delete expense'], 500);
+            Log::error('Failed to delete expense', ['error' => $e->getMessage(), 'expense_id' => $expense->id]);
+            return response()->json(['message' => 'فشل حذف المصروف'], 500);
         }
+    }
+
+    // ─── Private Helpers ──────────────────────────────────────────────────────
+
+    /**
+     * معالجة تقسيمات المصروف المشترك
+     * Requirements: 2.1, 2.2, 2.4, 2.5, 2.7
+     */
+    private function handleSharedExpense(Expense $expense, array $validated): void
+    {
+        $totalAmount = (float) $validated['amount'];
+        $members     = $validated['members'];
+        $memberIds   = array_column($members, 'id');
+
+        if ($validated['split_type'] === 'equal') {
+            // Requirements: 2.1, 2.2, 2.3 - استخدام PennyRoutingService للتقسيم المتساوي
+            $splits = $this->pennyRouting->calculateEqualSplits(
+                $totalAmount,
+                $memberIds,
+                $expense->reference
+            );
+
+            foreach ($splits as $memberId => $amount) {
+                ExpenseSplit::create([
+                    'expense_id' => $expense->id,
+                    'member_id'  => $memberId,
+                    'amount'     => $amount,
+                ]);
+            }
+
+        } else {
+            // Requirements: 2.4, 2.5 - التقسيم اليدوي (التحقق من المجموع تم في StoreExpenseRequest)
+            foreach ($members as $memberData) {
+                ExpenseSplit::create([
+                    'expense_id' => $expense->id,
+                    'member_id'  => $memberData['id'],
+                    'amount'     => $memberData['amount'],
+                ]);
+            }
+        }
+    }
+
+    /**
+     * إعادة حساب أرصدة جميع الأعضاء المتأثرين بالمصروف
+     * Requirements: 4.2, 17.2, 15.1 - تحسين eager loading
+     */
+    private function recalculateAffectedBalances(Expense $expense, array $validated): void
+    {
+        $affectedMemberIds = collect($validated['members'] ?? [])->pluck('id');
+
+        if ($expense->payer_id) {
+            $affectedMemberIds->push($expense->payer_id);
+        }
+        if ($expense->affected_member_id) {
+            $affectedMemberIds->push($expense->affected_member_id);
+        }
+
+        // تحسين: تحميل الأعضاء مع العلاقات المطلوبة لحساب الرصيد مرة واحدة
+        Member::whereIn('id', $affectedMemberIds->filter()->unique())
+            ->with([
+                'expenseSplits:id,member_id,amount',
+                'personalExpenses:id,affected_member_id,amount',
+                'paidExpenses:id,payer_id,amount',
+                'completedTransactions:id,member_id,type,amount'
+            ])
+            ->get()
+            ->each(fn(Member $member) => $this->transactionService->recalculateBalance($member));
     }
 }

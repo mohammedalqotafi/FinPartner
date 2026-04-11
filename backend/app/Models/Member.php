@@ -2,13 +2,14 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Member extends Model
 {
-    use SoftDeletes;
+    use HasFactory, SoftDeletes;
 
     protected $fillable = [
         'name',
@@ -89,13 +90,25 @@ class Member extends Model
     /**
      * الرصيد النهائي المحسوب (Unified Ledger)
      * = رصيد افتتاحي + إيداعات - سحوبات - تقسيمات مشاركة - مصاريف شخصية + مصاريف دفعها نيابة عن غيره
+     * 
+     * Requirements: 15.1 - تحسين الأداء باستخدام العلاقات المحملة مسبقاً
      */
     public function getCalculatedBalanceAttribute(): float
     {
         $depositWithdrawNet = $this->net_change;
-        $sharedSplits = (float) $this->expenseSplits()->sum('amount');
-        $personalExpenses = (float) $this->personalExpenses()->sum('amount');
-        $paidContributions = (float) $this->paidExpenses()->sum('amount');
+        
+        // استخدام العلاقات المحملة مسبقاً إن وجدت، وإلا تنفيذ استعلام
+        $sharedSplits = $this->relationLoaded('expenseSplits') 
+            ? (float) $this->expenseSplits->sum('amount')
+            : (float) $this->expenseSplits()->sum('amount');
+            
+        $personalExpenses = $this->relationLoaded('personalExpenses')
+            ? (float) $this->personalExpenses->sum('amount') 
+            : (float) $this->personalExpenses()->sum('amount');
+            
+        $paidContributions = $this->relationLoaded('paidExpenses')
+            ? (float) $this->paidExpenses->sum('amount')
+            : (float) $this->paidExpenses()->sum('amount');
 
         return (float) $this->opening_balance 
             + $depositWithdrawNet 

@@ -1,9 +1,14 @@
 import axios from 'axios';
 import type { Member, Transaction, TransactionType, TransactionStatus } from '../types';
 
+// ─── Base URL ─────────────────────────────────────────────────────────────────
+// In development Vite proxies /api → http://localhost:8000/api (see vite.config.ts).
+// In production the same-origin /api path is used directly.
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api';
+
 // ─── Axios Instance ───────────────────────────────────────────────────────────
 const http = axios.create({
-  baseURL: '/api',
+  baseURL: BASE_URL,
   headers: {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
@@ -11,16 +16,42 @@ const http = axios.create({
   },
 });
 
+// ─── API Error type ───────────────────────────────────────────────────────────
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    /** Laravel validation errors keyed by field */
+    public readonly errors?: Record<string, string[]>,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 // ─── Response Interceptor: normalize errors ───────────────────────────────────
 http.interceptors.response.use(
   (res) => res,
   (error) => {
-    const message =
-      error.response?.data?.message ||
-      error.response?.data?.errors ||
+    const status: number | undefined = error.response?.status;
+    const responseData = error.response?.data;
+
+    // Laravel validation errors (422) expose an `errors` map
+    const validationErrors: Record<string, string[]> | undefined =
+      responseData?.errors && typeof responseData.errors === 'object'
+        ? responseData.errors
+        : undefined;
+
+    const message: string =
+      responseData?.message ||
+      responseData?.error?.message ||
+      (status === 422 ? 'البيانات المدخلة غير صحيحة' : undefined) ||
+      (status === 404 ? 'العنصر المطلوب غير موجود' : undefined) ||
+      (status === 500 ? 'حدث خطأ داخلي في الخادم' : undefined) ||
       'حدث خطأ في الاتصال بالخادم';
-    return Promise.reject(new Error(typeof message === 'string' ? message : JSON.stringify(message)));
-  }
+
+    return Promise.reject(new ApiError(message, status, validationErrors));
+  },
 );
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -113,6 +144,11 @@ export const membersApi = {
 
   delete: async (id: string): Promise<void> => {
     await http.delete(`/members/${id}`);
+  },
+
+  sendWhatsApp: async (id: string, data: { message: string }): Promise<{ message: string; data: any }> => {
+    const res = await http.post(`/members/${id}/whatsapp`, data);
+    return res.data;
   },
 };
 

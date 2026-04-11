@@ -13,7 +13,17 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
+        secure: false,
       },
     },
+  },
+  test: {
+    globals: true,
+    environment: 'node',
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    environmentMatchGlobs: [
+      ['src/**/*.test.tsx', 'jsdom'],
+    ],
+    setupFiles: ['src/test-setup.ts'],
   },
 })

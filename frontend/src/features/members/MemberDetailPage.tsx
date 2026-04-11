@@ -1,16 +1,20 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowRight, ArrowDownToLine, ArrowUpFromLine,
-  Printer, TrendingUp, TrendingDown, ArrowUpDown, Minus,
+  Printer, TrendingUp, TrendingDown, ArrowUpDown, Minus, MessageCircle,
+  Receipt, Users, Wallet,
 } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
 import { TransactionModal } from '../../components/shared/TransactionModal';
+import { WhatsAppModal } from '../../components/shared/WhatsAppModal';
 import {
   buildLedger, calcSummary, formatAmount, formatDatetime,
   formatTxId, TX_TYPE_LABEL, TX_TYPE_COLOR, TX_STATUS_LABEL,
 } from '../../utils/finance';
 import type { TransactionType } from '../../types';
+import { expensesService } from '../../services/expenses.service';
+import type { Expense } from '../../types/expenses.types';
 
 export function MemberDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -20,12 +24,34 @@ export function MemberDetailPage() {
   const updateTransactionStatus = useAppStore((s) => s.updateTransactionStatus);
 
   const [modal, setModal] = useState<TransactionType | null>(null);
+  const [whatsappOpen, setWhatsappOpen] = useState(false);
   const [filterType, setFilterType] = useState('all');
   const [filterStatus, setFilterStatus] = useState('completed');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+  
+  // Expenses state
+  const [allExpenses, setAllExpenses] = useState<Expense[]>([]);
+  const [loadingExpenses, setLoadingExpenses] = useState(true);
 
   const member = members.find((m) => m.id === id);
+
+  // Fetch all expenses and filter for this member
+  useEffect(() => {
+    const fetchExpenses = async () => {
+      try {
+        setLoadingExpenses(true);
+        const expenses = await expensesService.getAll();
+        setAllExpenses(expenses);
+      } catch (error) {
+        console.error('Failed to fetch expenses:', error);
+      } finally {
+        setLoadingExpenses(false);
+      }
+    };
+    
+    fetchExpenses();
+  }, []);
 
   if (!member) {
     return (
@@ -37,6 +63,22 @@ export function MemberDetailPage() {
       </div>
     );
   }
+
+  // Filter expenses for this member
+  const personalExpenses = allExpenses.filter(
+    (e) => e.expense_type === 'personal' && e.affected_member_id === Number(id)
+  );
+  
+  const sharedExpenseSplits = allExpenses
+    .filter((e) => e.expense_type === 'shared' && e.splits?.some((s) => s.member_id === Number(id)))
+    .map((e) => ({
+      expense: e,
+      split: e.splits?.find((s) => s.member_id === Number(id))!,
+    }));
+  
+  const paidExpenses = allExpenses.filter(
+    (e) => e.payer_id === Number(id)
+  );
 
   // Filter & sort transactions for this member
   const memberTxs = transactions
@@ -55,6 +97,16 @@ export function MemberDetailPage() {
   const summary = calcSummary(member.openingBalance, allMemberTxs);
 
   const pendingTxs = allMemberTxs.filter((t) => t.status === 'pending');
+
+  // Calculate expense totals
+  const totalPersonalExpenses = personalExpenses.reduce((sum, e) => sum + parseFloat(e.amount), 0);
+  const totalSharedSplits = sharedExpenseSplits.reduce((sum, { split }) => sum + parseFloat(split.amount), 0);
+  const totalPaidExpenses = paidExpenses.reduce((sum, e) => sum + parseFloat(e.amount), 0);
+  const totalExpenses = totalPersonalExpenses + totalSharedSplits;
+  
+  // Calculate unified balance (Requirements: 4.1)
+  // opening_balance + deposits - withdrawals - shared_splits - personal_expenses + paid_expenses
+  const unifiedBalance = member.openingBalance + summary.totalDeposits - summary.totalWithdrawals - totalSharedSplits - totalPersonalExpenses + totalPaidExpenses;
 
   return (
     <div className="p-6 lg:p-8 space-y-6 print:p-4 print:space-y-4">
@@ -101,6 +153,13 @@ export function MemberDetailPage() {
           </div>
           <div className="flex gap-3 print:hidden">
             <button
+              onClick={() => setWhatsappOpen(true)}
+              disabled={!member.phone}
+              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold rounded-xl text-sm shadow-lg shadow-emerald-200 transition cursor-pointer"
+            >
+              <MessageCircle size={15} /> واتساب
+            </button>
+            <button
               onClick={() => setModal('deposit')}
               className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-sm shadow-lg shadow-emerald-200 transition cursor-pointer"
             >
@@ -117,36 +176,75 @@ export function MemberDetailPage() {
       </div>
 
       {/* ── Summary Cards ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 print:grid-cols-4">
-        <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm print:border print:shadow-none print:rounded-none">
-          <p className="text-xs text-slate-500 font-medium mb-1">الرصيد النهائي</p>
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 print:grid-cols-6">
+        <div 
+          className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm print:border print:shadow-none print:rounded-none cursor-pointer hover:shadow-md transition-shadow"
+          onClick={() => navigate(`/members/${id}/financials?filter=all`)}
+        >
+          <p className="text-xs text-slate-500 font-medium mb-1">الرصيد الموحد النهائي</p>
           <div className="flex items-center gap-1.5">
-            {summary.currentBalance >= 0
+            {unifiedBalance >= 0
               ? <TrendingUp size={18} className="text-emerald-500 shrink-0" />
               : <TrendingDown size={18} className="text-rose-500 shrink-0" />}
-            <p className={`text-xl font-extrabold ${summary.currentBalance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`} dir="ltr">
-              {formatAmount(summary.currentBalance)} ر.س
+            <p className={`text-xl font-extrabold ${unifiedBalance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`} dir="ltr">
+              {formatAmount(unifiedBalance)} ر.س
             </p>
           </div>
+          <p className="text-xs text-indigo-500 mt-1 font-semibold">اضغط للتفاصيل →</p>
         </div>
 
-        <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm print:border print:shadow-none print:rounded-none">
+        <div 
+          className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm print:border print:shadow-none print:rounded-none cursor-pointer hover:shadow-md transition-shadow"
+          onClick={() => navigate(`/members/${id}/financials?filter=deposits`)}
+        >
           <p className="text-xs text-slate-500 font-medium mb-1">إجمالي الإيداعات</p>
           <div className="flex items-center gap-1.5">
             <ArrowDownToLine size={16} className="text-emerald-500 shrink-0" />
             <p className="text-xl font-extrabold text-emerald-600" dir="ltr">+{formatAmount(summary.totalDeposits)} ر.س</p>
           </div>
+          <p className="text-xs text-indigo-500 mt-1 font-semibold">اضغط للتفاصيل →</p>
         </div>
 
-        <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm print:border print:shadow-none print:rounded-none">
+        <div 
+          className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm print:border print:shadow-none print:rounded-none cursor-pointer hover:shadow-md transition-shadow"
+          onClick={() => navigate(`/members/${id}/financials?filter=withdrawals`)}
+        >
           <p className="text-xs text-slate-500 font-medium mb-1">إجمالي السحوبات</p>
           <div className="flex items-center gap-1.5">
             <ArrowUpFromLine size={16} className="text-rose-500 shrink-0" />
             <p className="text-xl font-extrabold text-rose-600" dir="ltr">-{formatAmount(summary.totalWithdrawals)} ر.س</p>
           </div>
+          <p className="text-xs text-indigo-500 mt-1 font-semibold">اضغط للتفاصيل →</p>
         </div>
 
-        <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm print:border print:shadow-none print:rounded-none">
+        <div 
+          className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm print:border print:shadow-none print:rounded-none cursor-pointer hover:shadow-md transition-shadow"
+          onClick={() => navigate(`/members/${id}/financials?filter=expenses`)}
+        >
+          <p className="text-xs text-slate-500 font-medium mb-1">إجمالي المصروفات</p>
+          <div className="flex items-center gap-1.5">
+            <Receipt size={16} className="text-rose-500 shrink-0" />
+            <p className="text-xl font-extrabold text-rose-600" dir="ltr">-{formatAmount(totalExpenses)} ر.س</p>
+          </div>
+          <p className="text-xs text-indigo-500 mt-1 font-semibold">اضغط للتفاصيل →</p>
+        </div>
+
+        <div 
+          className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm print:border print:shadow-none print:rounded-none cursor-pointer hover:shadow-md transition-shadow"
+          onClick={() => navigate(`/members/${id}/financials?filter=expenses`)}
+        >
+          <p className="text-xs text-slate-500 font-medium mb-1">المصروفات المدفوعة</p>
+          <div className="flex items-center gap-1.5">
+            <Wallet size={16} className="text-emerald-500 shrink-0" />
+            <p className="text-xl font-extrabold text-emerald-600" dir="ltr">+{formatAmount(totalPaidExpenses)} ر.س</p>
+          </div>
+          <p className="text-xs text-indigo-500 mt-1 font-semibold">اضغط للتفاصيل →</p>
+        </div>
+
+        <div 
+          className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm print:border print:shadow-none print:rounded-none cursor-pointer hover:shadow-md transition-shadow"
+          onClick={() => navigate(`/members/${id}/financials?filter=all`)}
+        >
           <p className="text-xs text-slate-500 font-medium mb-1">صافي التغير</p>
           <div className="flex items-center gap-1.5">
             <ArrowUpDown size={16} className={summary.netChange >= 0 ? 'text-emerald-500' : 'text-rose-500'} />
@@ -154,8 +252,56 @@ export function MemberDetailPage() {
               {summary.netChange >= 0 ? '+' : ''}{formatAmount(summary.netChange)} ر.س
             </p>
           </div>
+          <p className="text-xs text-indigo-500 mt-1 font-semibold">اضغط للتفاصيل →</p>
         </div>
       </div>
+
+      {/* ── Unified Balance Breakdown ── */}
+      {!loadingExpenses && (
+        <div className="bg-gradient-to-br from-indigo-50 to-blue-50 rounded-2xl p-6 border border-indigo-100 shadow-sm">
+          <h3 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
+            <span className="text-indigo-600">📊</span>
+            تفصيل الرصيد الموحد (Unified Ledger)
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
+            <div className="bg-white/80 rounded-xl p-4">
+              <p className="text-xs text-slate-500 mb-1">رصيد افتتاحي</p>
+              <p className="text-lg font-bold text-slate-700" dir="ltr">{formatAmount(member.openingBalance)} ر.س</p>
+            </div>
+            <div className="bg-white/80 rounded-xl p-4">
+              <p className="text-xs text-slate-500 mb-1">+ إيداعات</p>
+              <p className="text-lg font-bold text-emerald-600" dir="ltr">+{formatAmount(summary.totalDeposits)} ر.س</p>
+            </div>
+            <div className="bg-white/80 rounded-xl p-4">
+              <p className="text-xs text-slate-500 mb-1">- سحوبات</p>
+              <p className="text-lg font-bold text-rose-600" dir="ltr">-{formatAmount(summary.totalWithdrawals)} ر.س</p>
+            </div>
+            <div className="bg-white/80 rounded-xl p-4">
+              <p className="text-xs text-slate-500 mb-1">- تقسيمات مشتركة</p>
+              <p className="text-lg font-bold text-rose-600" dir="ltr">-{formatAmount(totalSharedSplits)} ر.س</p>
+            </div>
+            <div className="bg-white/80 rounded-xl p-4">
+              <p className="text-xs text-slate-500 mb-1">- مصروفات شخصية</p>
+              <p className="text-lg font-bold text-rose-600" dir="ltr">-{formatAmount(totalPersonalExpenses)} ر.س</p>
+            </div>
+            <div className="bg-white/80 rounded-xl p-4">
+              <p className="text-xs text-slate-500 mb-1">+ مصروفات مدفوعة</p>
+              <p className="text-lg font-bold text-emerald-600" dir="ltr">+{formatAmount(totalPaidExpenses)} ر.س</p>
+            </div>
+            <div className="bg-white/80 rounded-xl p-4 md:col-span-2">
+              <p className="text-xs text-slate-500 mb-1">= الرصيد النهائي</p>
+              <p className={`text-xl font-extrabold ${unifiedBalance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`} dir="ltr">
+                {formatAmount(unifiedBalance)} ر.س
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 text-xs text-slate-500 bg-white/60 rounded-lg p-3">
+            <p className="font-mono">
+              الرصيد = {formatAmount(member.openingBalance)} + {formatAmount(summary.totalDeposits)} - {formatAmount(summary.totalWithdrawals)} - {formatAmount(totalSharedSplits)} - {formatAmount(totalPersonalExpenses)} + {formatAmount(totalPaidExpenses)} = {formatAmount(unifiedBalance)} ر.س
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ── Pending Alert ── */}
       {pendingTxs.length > 0 && (
@@ -382,11 +528,217 @@ export function MemberDetailPage() {
         )}
       </div>
 
+      {/* ── Expenses Section ── */}
+      {!loadingExpenses && (personalExpenses.length > 0 || sharedExpenseSplits.length > 0 || paidExpenses.length > 0) && (
+        <div className="space-y-6 print:hidden">
+          <h2 className="text-xl font-bold text-slate-900">المصروفات</h2>
+
+          {/* Personal Expenses */}
+          {personalExpenses.length > 0 && (
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3">
+                <Receipt size={20} className="text-rose-500" />
+                <div>
+                  <h3 className="font-bold text-slate-900">المصروفات الشخصية</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">{personalExpenses.length} مصروف</p>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-right text-sm">
+                  <thead>
+                    <tr className="bg-slate-50">
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">المرجع</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">التاريخ</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">التصنيف</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">الوصف</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">المبلغ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {personalExpenses.map((expense) => (
+                      <tr key={expense.id} className="border-b border-slate-50 hover:bg-slate-50/70 transition-colors">
+                        <td className="py-3.5 px-4">
+                          <span className="font-mono text-xs font-bold text-slate-600">{expense.reference}</span>
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-500 text-xs whitespace-nowrap">
+                          {new Date(expense.expense_datetime).toLocaleDateString('ar-SA')}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-50 text-purple-600">
+                            {expense.category}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-600 text-xs">
+                          {expense.description || '—'}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className="font-bold text-rose-600" dir="ltr">-{formatAmount(parseFloat(expense.amount))} ر.س</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-slate-50 font-semibold">
+                      <td colSpan={4} className="py-3 px-4 text-sm">الإجمالي</td>
+                      <td className="py-3 px-4">
+                        <span className="font-bold text-rose-600" dir="ltr">
+                          -{formatAmount(personalExpenses.reduce((sum, e) => sum + parseFloat(e.amount), 0))} ر.س
+                        </span>
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Shared Expense Splits */}
+          {sharedExpenseSplits.length > 0 && (
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3">
+                <Users size={20} className="text-blue-500" />
+                <div>
+                  <h3 className="font-bold text-slate-900">التقسيمات المشتركة</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">{sharedExpenseSplits.length} حصة</p>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-right text-sm">
+                  <thead>
+                    <tr className="bg-slate-50">
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">المرجع</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">التاريخ</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">التصنيف</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">الوصف</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">المبلغ الكلي</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">حصتي</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sharedExpenseSplits.map(({ expense, split }) => (
+                      <tr key={`${expense.id}-${split.id}`} className="border-b border-slate-50 hover:bg-slate-50/70 transition-colors">
+                        <td className="py-3.5 px-4">
+                          <span className="font-mono text-xs font-bold text-slate-600">{expense.reference}</span>
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-500 text-xs whitespace-nowrap">
+                          {new Date(expense.expense_datetime).toLocaleDateString('ar-SA')}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-600">
+                            {expense.category}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-600 text-xs">
+                          {expense.description || '—'}
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-500 text-xs" dir="ltr">
+                          {formatAmount(parseFloat(expense.amount))} ر.س
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className="font-bold text-rose-600" dir="ltr">-{formatAmount(parseFloat(split.amount))} ر.س</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-slate-50 font-semibold">
+                      <td colSpan={5} className="py-3 px-4 text-sm">الإجمالي</td>
+                      <td className="py-3 px-4">
+                        <span className="font-bold text-rose-600" dir="ltr">
+                          -{formatAmount(sharedExpenseSplits.reduce((sum, { split }) => sum + parseFloat(split.amount), 0))} ر.س
+                        </span>
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Paid Expenses */}
+          {paidExpenses.length > 0 && (
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3">
+                <Wallet size={20} className="text-emerald-500" />
+                <div>
+                  <h3 className="font-bold text-slate-900">المصروفات المدفوعة</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">{paidExpenses.length} مصروف (دفعها نيابة عن الآخرين)</p>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-right text-sm">
+                  <thead>
+                    <tr className="bg-slate-50">
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">المرجع</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">التاريخ</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">النوع</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">التصنيف</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">الوصف</th>
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-600">المبلغ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paidExpenses.map((expense) => (
+                      <tr key={expense.id} className="border-b border-slate-50 hover:bg-slate-50/70 transition-colors">
+                        <td className="py-3.5 px-4">
+                          <span className="font-mono text-xs font-bold text-slate-600">{expense.reference}</span>
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-500 text-xs whitespace-nowrap">
+                          {new Date(expense.expense_datetime).toLocaleDateString('ar-SA')}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
+                            expense.expense_type === 'shared' ? 'bg-blue-50 text-blue-600' :
+                            expense.expense_type === 'personal' ? 'bg-purple-50 text-purple-600' :
+                            'bg-amber-50 text-amber-600'
+                          }`}>
+                            {expense.expense_type === 'shared' ? 'مشترك' :
+                             expense.expense_type === 'personal' ? 'شخصي' : 'تشغيلي'}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-600">
+                            {expense.category}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-600 text-xs">
+                          {expense.description || '—'}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className="font-bold text-emerald-600" dir="ltr">+{formatAmount(parseFloat(expense.amount))} ر.س</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-slate-50 font-semibold">
+                      <td colSpan={5} className="py-3 px-4 text-sm">الإجمالي</td>
+                      <td className="py-3 px-4">
+                        <span className="font-bold text-emerald-600" dir="ltr">
+                          +{formatAmount(paidExpenses.reduce((sum, e) => sum + parseFloat(e.amount), 0))} ر.س
+                        </span>
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {modal && (
         <TransactionModal
           defaultType={modal}
           defaultMemberId={id}
           onClose={() => setModal(null)}
+        />
+      )}
+
+      {whatsappOpen && (
+        <WhatsAppModal
+          member={member}
+          onClose={() => setWhatsappOpen(false)}
         />
       )}
     </div>
